@@ -88,494 +88,40 @@ def anchor(name):
     st.markdown(f"<div id='{name}'></div>", unsafe_allow_html=True)
 
 # ============================================================
-# CHARGEMENT DES DONNÉES
 # ============================================================
-@st.cache_data(show_spinner="Chargement des données…")
-def charger_csv(path, sep=";", encoding="utf-8-sig"):
-    return pd.read_csv(path, sep=sep, encoding=encoding, low_memory=False)
-
-@st.cache_data(show_spinner="Chargement des données…")
-def charger_toutes_les_donnees():
-    atlas_files = list(DATA_DIR.glob("fr-esr-atlas*.csv"))
-    if not atlas_files:
-        raise FileNotFoundError("Aucun fichier ATLAS dans data/ (doit commencer par fr-esr-atlas).")
-    atlas = charger_csv(atlas_files[0])
-
-    fichiers_parcoursup = {
-        "2018": DATA_DIR / "fr-esr-parcoursup-2018.csv",
-        "2019": DATA_DIR / "fr-esr-parcoursup-2019.csv",
-        "2020": DATA_DIR / "fr-esr-parcoursup_2020.csv",
-        "2021": DATA_DIR / "fr-esr-parcoursup_2021.csv",
-        "2022": DATA_DIR / "fr-esr-parcoursup_2022.csv",
-        "2023": DATA_DIR / "fr-esr-parcoursup_2023.csv",
-        "2024": DATA_DIR / "fr-esr-parcoursup_2024.csv",
-        "2025": DATA_DIR / "fr-esr-parcoursup_2025.csv",
-    }
-    annees = {}
-    for an, f in fichiers_parcoursup.items():
-        if f.exists():
-            annees[an] = charger_csv(f)
-    if "2025" not in annees:
-        raise FileNotFoundError("Parcoursup 2025 requis : data/fr-esr-parcoursup_2025.csv")
-
-    fa = DATA_DIR / "fr-esr-parcoursup-apprentissage.csv"
-    if not fa.exists():
-        raise FileNotFoundError("Fichier apprentissage introuvable dans data/.")
-    appr = charger_csv(fa)
-    return atlas, annees, appr
-
+# CHARGEMENT DES DONNÉES WEB ALLÉGÉES
 # ============================================================
-# FIGURES PLOTLY (reprises de streamlit.py)
-# ============================================================
-def fig_evolution_total_inscrits(atlas):
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["Regroupements de formations ou d’établissements", "regroupement"])
-    C_EFF = "Nombre total d’étudiants inscrits"
-    d = atlas[(atlas["Niveau géographique"] == "Pays") &
-              (atlas[C_REG] == "Total des formations d'enseignement supérieur")].copy()
-    d[C_EFF] = _num(d[C_EFF])
-    s = d.groupby(C_AN, as_index=False)[C_EFF].sum().sort_values(C_AN)
-    s["fmt"] = s[C_EFF].map(lambda x: _fmt_int_fr(x) + " étudiants")
-    fig = go.Figure(go.Scatter(
-        x=s[C_AN], y=s[C_EFF], mode="lines+markers",
-        line=dict(width=3, color=COLOR_PRIVATE), marker=dict(size=7),
-        fill="tozeroy", fillcolor="rgba(83,74,183,0.10)",
-        customdata=np.stack([s["fmt"]], axis=-1),
-        hovertemplate="<b>%{x}</b><br>Effectif total : %{customdata[0]}<extra></extra>"))
-    fig.update_layout(title="Évolution du nombre d'étudiants inscrits dans le supérieur (2001-2025)",
-                      xaxis_title="Année universitaire", yaxis_title="Étudiants inscrits",
-                      hovermode="x unified", template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45)
-    fig.update_yaxes(tickformat=",.0f", rangemode="tozero")
-    return fig
-
-def fig_donuts_etablissements(atlas):
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["regroupement", "Regroupements de formations ou d’établissements"])
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    etabs = ["UNIV", "EC_COM", "EC_PARAM", "EC_ART", "EC_JUR", "EC_autres", "EPEU", "GE", "ENS", "INP", "UT"]
-    mapping = {"EC_COM": "Écoles de commerce", "EC_ART": "Écoles d'art & culture",
-               "EC_PARAM": "Paramédical & social", "EC_autres": "Autres écoles spécialisées",
-               "EPEU": "Universités privées"}
-    ordre = ["Écoles de commerce", "Écoles d'art & culture", "Paramédical & social",
-             "Autres écoles spécialisées", "Universités privées", "Autres"]
-    def rep(an):
-        d = atlas[(atlas["Niveau géographique"] == "Pays") & (atlas[C_SEC] == "Établissements privés") &
-                  (atlas[C_REG].isin(etabs)) & (atlas[C_AN] == an)].copy()
-        d[C_EFF] = _num(d[C_EFF])
-        d["cat"] = d[C_REG].map(mapping).fillna("Autres")
-        return d.groupby("cat")[C_EFF].sum().reindex(ordre).fillna(0)
-    s2001, s2024 = rep("2001-02"), rep("2024-25")
-    fig = make_subplots(rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]],
-                        subplot_titles=["2001", "2024"])
-    for col, s in [(1, s2001), (2, s2024)]:
-        total = s.sum()
-        custom = np.stack([s.index, s.values,
-                           [v/total*100 if total else 0 for v in s.values],
-                           [_fmt_int_fr(v) for v in s.values],
-                           [_fmt_int_fr(total) for _ in s.values]], axis=-1)
-        fig.add_trace(go.Pie(labels=s.index, values=s.values, hole=0.55,
-                             customdata=custom,
-                             hovertemplate=("<b>%{customdata[0]}</b><br>Effectif : %{customdata[3]} étud.<br>"
-                                            "Part : %{customdata[2]:.1f} %<br>Total privé : %{customdata[4]}<extra></extra>")),
-                      row=1, col=col)
-        fig.add_annotation(text=f"{_fmt_int_fr(total)}<br>étudiants",
-                           x=0.18 if col == 1 else 0.82, y=0.5, showarrow=False, font=dict(size=13))
-    fig.update_layout(title="Répartition des étudiants privés par type d'établissement : 2001 vs 2024",
-                      template="plotly_white", legend_title_text="Type d'établissement")
-    return fig
-
-def fig_croissance_par_type(atlas):
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["regroupement", "Regroupements de formations ou d’établissements"])
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    etabs = ["UNIV", "EC_COM", "EC_PARAM", "EC_ART", "EC_JUR", "EC_autres", "EPEU", "GE", "ENS", "INP", "UT"]
-    mapping = {"EC_COM": "Écoles de commerce", "EC_ART": "Écoles d'art & culture",
-               "EC_PARAM": "Paramédical & social", "EC_autres": "Autres écoles spécialisées",
-               "EPEU": "Universités privées"}
-    def eff(an):
-        d = atlas[(atlas["Niveau géographique"] == "Pays") & (atlas[C_SEC] == "Établissements privés") &
-                  (atlas[C_REG].isin(etabs)) & (atlas[C_AN] == an)].copy()
-        d[C_EFF] = _num(d[C_EFF])
-        d["type"] = d[C_REG].map(mapping).fillna("Autres")
-        return d.groupby("type")[C_EFF].sum()
-    g = pd.concat([eff("2001-02").rename("2001"), eff("2024-25").rename("2024")], axis=1).fillna(0)
-    g["gain"] = g["2024"] - g["2001"]
-    g["contribution"] = g["gain"] / g["gain"].sum() * 100
-    g["croissance"] = np.where(g["2001"] > 0, (g["2024"]/g["2001"]-1)*100, np.nan)
-    g = g.sort_values("gain").reset_index()
-    g["gain_fmt"] = g["gain"].map(_fmt_int_fr)
-    g["contribution_fmt"] = g["contribution"].map(lambda x: _fmt_pct_fr(x, 1))
-    g["croissance_fmt"] = g["croissance"].map(lambda x: _fmt_pct_fr(x, 0))
-    fig = px.bar(g, x="gain", y="type", orientation="h",
-                 custom_data=["gain_fmt", "contribution_fmt", "croissance_fmt"],
-                 title="Quel type d'établissement a porté la croissance du privé ? (2001-2024)")
-    fig.update_traces(marker_color=COLOR_PRIVATE,
-                      hovertemplate=("<b>%{y}</b><br>Gain : %{customdata[0]} étud.<br>"
-                                     "Contribution : %{customdata[1]}<br>Croissance : %{customdata[2]}<extra></extra>"))
-    fig.update_layout(xaxis_title="Gain d'effectifs privés", yaxis_title="", template="plotly_white")
-    fig.update_xaxes(tickformat=",.0f")
-    return fig
-
-def fig_croissance_prive_vs_public(atlas):
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["Regroupements de formations ou d’établissements", "regroupement"])
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    d = atlas[(atlas["Niveau géographique"] == "Pays") &
-              (atlas[C_REG] == "Total des formations d'enseignement supérieur")].copy()
-    d[C_EFF] = _num(d[C_EFF])
-    d["secteur"] = d[C_SEC].map({"Établissements privés": "Privé", "Établissements publics": "Public"})
-    piv = d.pivot_table(index=C_AN, columns="secteur", values=C_EFF, aggfunc="sum", fill_value=0).sort_index()
-    piv["Total"] = piv["Privé"] + piv["Public"]
-    piv["Part"] = piv["Privé"] / piv["Total"] * 100
-    data = piv.reset_index()
-    fig = go.Figure()
-    for sec, color in [("Public", COLOR_PUBLIC), ("Privé", COLOR_PRIVATE)]:
-        fig.add_trace(go.Scatter(x=data[C_AN], y=data[sec], mode="lines+markers",
-                                 line=dict(width=3, color=color), marker=dict(size=7), name=sec,
-                                 customdata=np.stack([[_fmt_int_fr(v)+" étud." for v in data[sec]],
-                                                      data["Part"].map(lambda x: _fmt_pct_fr(x,1))], axis=-1),
-                                 hovertemplate=("<b>%{x}</b><br>Secteur : "+sec+"<br>Effectif : %{customdata[0]}<br>"
-                                                "Part du privé : %{customdata[1]}<extra></extra>")))
-    fig.update_layout(title="Qui porte la croissance du supérieur ? Privé vs public (2001-2025)",
-                      xaxis_title="Année universitaire", yaxis_title="Étudiants inscrits",
-                      hovermode="x unified", template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45)
-    fig.update_yaxes(tickformat=",.0f", rangemode="tozero")
-    return fig
-
-def df_croissance_region(atlas):
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["Regroupements de formations ou d’établissements", "regroupement"])
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    C_GEO = "Unité géographique"
-    reg = atlas[(atlas["Niveau géographique"] == "Région") &
-                (atlas[C_REG] == "Total des formations d'enseignement supérieur") &
-                (atlas[C_SEC] == "Établissements privés") &
-                (atlas[C_AN].isin(["2001-02", "2024-25"]))].copy()
-    reg[C_GEO] = reg[C_GEO].map(_clean_region_name)
-    reg[C_EFF] = _num(reg[C_EFF])
-    piv = reg.pivot_table(index=C_GEO, columns=C_AN, values=C_EFF, aggfunc="sum", fill_value=0)
-    piv = piv.rename(columns={"2001-02": "Privé 2001", "2024-25": "Privé 2024"})
-    piv["Croissance %"] = np.where(piv["Privé 2001"] > 0, (piv["Privé 2024"]/piv["Privé 2001"]-1)*100, np.nan)
-    out = piv.reset_index().rename(columns={C_GEO: "Région"}).sort_values("Croissance %", ascending=False)
-    out["Privé 2001"] = out["Privé 2001"].astype(int)
-    out["Privé 2024"] = out["Privé 2024"].astype(int)
-    out["Croissance %"] = out["Croissance %"].round(0)
-    return out
-
-def fig_croissance_regions_bar(atlas):
-    d = df_croissance_region(atlas).copy()
-    hors = ["Corse", "Mayotte", "Guyane", "Guadeloupe", "Martinique", "La Réunion",
-            "Collectivités d'outre-mer", "Collectivités d’outre-mer", "Étranger",
-            "Collectivités d'Outre-Mer", "France métropolitaine + DROM"]
-    d = d[~d["Région"].isin(hors)].copy()
-    d = d.sort_values("Croissance %", ascending=True)
-    d["c_fmt"] = d["Croissance %"].map(lambda x: _fmt_pct_fr(x, 0))
-    d["p1"] = d["Privé 2001"].map(_fmt_int_fr)
-    d["p2"] = d["Privé 2024"].map(_fmt_int_fr)
-    fig = px.bar(d, x="Croissance %", y="Région", orientation="h",
-                 custom_data=["c_fmt", "p1", "p2"],
-                 title="Croissance des effectifs privés par région (2001-2024, France métropolitaine hors Corse)")
-    fig.update_traces(marker_color=COLOR_PRIVATE,
-                      hovertemplate=("<b>%{y}</b><br>Croissance : %{customdata[0]}<br>"
-                                     "Privé 2001 : %{customdata[1]} étud.<br>Privé 2024 : %{customdata[2]} étud.<extra></extra>"))
-    fig.update_layout(template="plotly_white", xaxis_title="Croissance des effectifs privés (%)",
-                      yaxis_title="", height=520)
-    return fig
-
-def fig_part_prive_regions(atlas):
-    url = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
-    C_AN = "Année universitaire"
-    C_REG = _find_col(atlas, ["Regroupements de formations ou d’établissements", "regroupement"])
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    C_GEO = "Unité géographique"
-    dates = ["2001-02", "2013-14", "2018-19", "2024-25"]
-    reg = atlas[(atlas["Niveau géographique"] == "Région") &
-                (atlas[C_REG] == "Total des formations d'enseignement supérieur") &
-                (atlas[C_AN].isin(dates))].copy()
-    reg[C_GEO] = reg[C_GEO].map(_clean_region_name)
-    # On garde uniquement la France métropolitaine pour une carte lisible
-    hors = ["La Réunion", "Martinique", "Guadeloupe", "Guyane", "Mayotte",
-            "Collectivités d'outre-mer", "Collectivités d’outre-mer", "Étranger", "Corse"]
-    reg = reg[~reg[C_GEO].isin(hors)]
-    reg[C_EFF] = _num(reg[C_EFF])
-    reg["secteur"] = reg[C_SEC].map({"Établissements privés": "Privé", "Établissements publics": "Public"})
-    piv = reg.pivot_table(index=[C_AN, C_GEO], columns="secteur", values=C_EFF, aggfunc="sum", fill_value=0).reset_index()
-    piv["Total"] = piv["Privé"] + piv["Public"]
-    piv["part"] = piv["Privé"] / piv["Total"] * 100
-    piv["annee"] = piv[C_AN].str[:4]
-    piv["pf"] = piv["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    with urlopen(url) as r:
-        gj = json.load(r)
-    # Échelle calée sur les vraies valeurs (0 à ~40 %) pour révéler les écarts
-    vmax = float(np.ceil(piv["part"].max() / 5) * 5)  # arrondi au multiple de 5 supérieur
-    fig = px.choropleth(piv, geojson=gj, locations=C_GEO, featureidkey="properties.nom",
-                        color="part", animation_frame="annee", color_continuous_scale="YlOrRd",
-                        range_color=(0, vmax), custom_data=["pf"],
-                        title="Part du privé par région : 2001 → 2013 → 2018 → 2024")
-    fig.update_traces(hovertemplate="<b>%{location}</b><br>Part du privé : %{customdata[0]}<extra></extra>")
-    fig.update_geos(fitbounds="locations", visible=False)
-    fig.update_layout(template="plotly_white", margin=dict(l=0, r=0, t=60, b=0), height=560,
-                      coloraxis_colorbar=dict(title="Part du privé (%)", ticksuffix=" %"))
-    return fig
-
-def fig_apprentis_bts(atlas):
-    C_AN = "Année universitaire"
-    C_REG = "Regroupements de formations ou d’établissements"
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_APP = "Nombre d’étudiants inscrits en STS et assimilés sous statut d’apprenti"
-    d = atlas[(atlas[C_REG] == "Sections de techniciens supérieurs (STS) et assimilés") &
-              (atlas["Niveau géographique"] == "Pays")].copy()
-    d[C_APP] = _num(d[C_APP])
-    d["secteur"] = d[C_SEC].map({"Établissements privés": "Privé", "Établissements publics": "Public"})
-    piv = d.groupby([C_AN, "secteur"])[C_APP].sum().unstack(fill_value=0).sort_index()
-    piv["Total"] = piv.get("Privé", 0) + piv.get("Public", 0)
-    piv = piv[piv["Total"] > 0].reset_index()
-    fig = go.Figure()
-    for col, color, dash in [("Total", COLOR_TOTAL, None), ("Privé", COLOR_PRIVATE, None), ("Public", COLOR_PUBLIC, "dash")]:
-        fig.add_trace(go.Scatter(x=piv[C_AN], y=piv[col], mode="lines+markers", name=col,
-                                 line=dict(width=3, color=color, dash=dash), marker=dict(size=7),
-                                 customdata=np.stack([piv[col].map(lambda x: _fmt_int_fr(x)+" apprentis")], axis=-1),
-                                 hovertemplate="<b>%{x}</b><br>"+col+" : %{customdata[0]}<extra></extra>"))
-    fig.update_layout(title="Apprentis en BTS : total, privé et public (2015-2025)",
-                      xaxis_title="Année universitaire", yaxis_title="Apprentis en BTS",
-                      hovermode="x unified", template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45)
-    fig.update_yaxes(tickformat=",.0f")
-    return fig
-
-def fig_part_apprentissage_bts_secteur(atlas):
-    C_AN = "Année universitaire"
-    C_REG = "Regroupements de formations ou d’établissements"
-    C_SEC = "Secteur de l’établissement d’inscription"
-    C_APP = "Nombre d’étudiants inscrits en STS et assimilés sous statut d’apprenti"
-    C_EFF = "Nombre total d’étudiants inscrits"
-    d = atlas[(atlas[C_REG] == "Sections de techniciens supérieurs (STS) et assimilés") &
-              (atlas["Niveau géographique"] == "Pays")].copy()
-    d[C_APP] = _num(d[C_APP]); d[C_EFF] = _num(d[C_EFF])
-    d["secteur"] = d[C_SEC].map({"Établissements privés": "Privé", "Établissements publics": "Public"})
-    g = d.groupby([C_AN, "secteur"]).agg(apprentis=(C_APP, "sum"), total=(C_EFF, "sum")).reset_index()
-    # On ne garde que les années où l'apprentissage STS est renseigné (à partir de 2015-16)
-    annees_ok = g[g["apprentis"] > 0][C_AN].unique()
-    g = g[g[C_AN].isin(annees_ok)].sort_values(C_AN)
-    g["part"] = g["apprentis"] / g["total"] * 100
-    g["pf"] = g["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    g["af"] = g["apprentis"].map(_fmt_int_fr)
-    g["tf"] = g["total"].map(_fmt_int_fr)
-    fig = px.line(g, x=C_AN, y="part", color="secteur", markers=True,
-                  color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC},
-                  custom_data=["pf", "af", "tf"],
-                  title="Part de l'apprentissage dans le BTS, par secteur (2015-2025)")
-    fig.update_traces(line=dict(width=3), marker=dict(size=8),
-                      hovertemplate=("<b>%{x}</b><br>Part apprentis : %{customdata[0]}<br>"
-                                     "Apprentis : %{customdata[1]}<br>Total BTS : %{customdata[2]}<extra></extra>"))
-    fig.update_layout(xaxis_title="Année universitaire", yaxis_title="Part de l'apprentissage (%)",
-                      template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45)
-    fig.update_yaxes(range=[0, 80], ticksuffix=" %")
-    return fig
-
-def fig_treemap_filiere_apprentissage(appr):
-    C_STAT = "Statut de l’établissement de la filière de formation"
-    C_FIL = "Filière de formation très agrégée"
-    d = appr[appr["Session"] == 2025].copy()
-    d["secteur"] = d[C_STAT].apply(lambda s: "Public" if s == "Public" else "Privé")
-    vol = (d[d["secteur"] == "Privé"].groupby(C_FIL).size().reset_index(name="formations")
-           .sort_values("formations", ascending=False))
-    total = vol["formations"].sum()
-    vol["part"] = vol["formations"] / total * 100
-    vol["nom"] = vol[C_FIL].astype(str).str.replace(r"^\d+_", "", regex=True)
-    vol["ff"] = vol["formations"].map(_fmt_int_fr)
-    vol["pf"] = vol["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    fig = px.treemap(vol, path=["nom"], values="formations", custom_data=["ff", "pf"],
-                     title=f"Volume du privé par filière en apprentissage (2025) — {_fmt_int_fr(total)} formations")
-    fig.update_traces(hovertemplate=("<b>%{label}</b><br>Formations privées : %{customdata[0]}<br>"
-                                     "Part : %{customdata[1]}<extra></extra>"))
-    fig.update_layout(template="plotly_white")
-    return fig
-
-def fig_recherche_contrat(appr):
-    C_STAT = "Statut de l’établissement de la filière de formation"
-    CAND = "Effectif total des candidats pour la formation"
-    RECH = "Nombre de de vœux placés en « Recherche de contrat » par la formation"
-    d = appr[appr["Session"] == 2025].copy()
-    d[CAND] = _num(d[CAND]); d[RECH] = _num(d[RECH])
-    g = d.groupby(C_STAT).agg(candidats=(CAND, "sum"), recherche=(RECH, "sum"),
-                              formations=(C_STAT, "size")).reset_index()
-    g["sécurisés"] = g["candidats"] - g["recherche"]
-    g["part_recherche"] = g["recherche"] / g["candidats"] * 100
-    ordre = ["Privé hors contrat", "Privé sous contrat d'association", "Privé enseignement supérieur", "Public"]
-    g[C_STAT] = pd.Categorical(g[C_STAT], categories=ordre, ordered=True)
-    g = g.sort_values(C_STAT)
-    g["lbl"] = g[C_STAT].astype(str) + "<br>(" + g["formations"].astype(int).astype(str) + " formations)"
-    long = g.melt(id_vars=[C_STAT, "lbl", "candidats", "formations", "part_recherche"],
-                  value_vars=["sécurisés", "recherche"], var_name="situation", value_name="effectif")
-    long["situation"] = long["situation"].replace({"sécurisés": "Avec débouché", "recherche": "En recherche de contrat"})
-    long["ef"] = long["effectif"].map(_fmt_int_fr)
-    long["prf"] = long["part_recherche"].map(lambda x: _fmt_pct_fr(x, 1))
-    fig = px.bar(long, x="lbl", y="effectif", color="situation",
-                 color_discrete_map={"Avec débouché": COLOR_PUBLIC, "En recherche de contrat": COLOR_PRIVATE},
-                 custom_data=["ef", "prf"], title="Apprentissage 2025 : candidats sans employeur par statut")
-    fig.update_traces(hovertemplate=("<b>%{x}</b><br>%{fullData.name} : %{customdata[0]} cand.<br>"
-                                     "Part sans employeur : %{customdata[1]}<extra></extra>"))
-    fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Candidats", template="plotly_white")
-    fig.update_yaxes(tickformat=",.0f")
-    return fig
-
-def fig_composition_statut_region(appr):
-    C_STAT = "Statut de l’établissement de la filière de formation"
-    C_REG = "Région de l’établissement"
-    d = appr[appr["Session"] == 2025].copy()
-    rep = pd.crosstab(d[C_REG], d[C_STAT], normalize="index") * 100
-    drom = ["Mayotte", "Guyane", "Guadeloupe", "Martinique", "La Réunion", "Corse"]
-    rep = rep[~rep.index.isin(drom)].reset_index()
-    long = rep.melt(id_vars=C_REG, var_name="statut", value_name="part")
-    long["part_fmt"] = long["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    if "Privé hors contrat" in long["statut"].unique():
-        ordre = (long[long["statut"] == "Privé hors contrat"]
-                 .sort_values("part")[C_REG].tolist())
-        long[C_REG] = pd.Categorical(long[C_REG], categories=ordre, ordered=True)
-    fig = px.bar(long, x="part", y=C_REG, color="statut", orientation="h",
-                 custom_data=["part_fmt"],
-                 title="Composition par statut de l'offre d'apprentissage par région (2025)")
-    fig.update_traces(hovertemplate="<b>%{y}</b><br>%{fullData.name} : %{customdata[0]}<extra></extra>")
-    fig.update_layout(barmode="stack", xaxis_title="Part de l'offre d'apprentissage (%)",
-                      yaxis_title="", template="plotly_white", legend_title_text="Statut")
-    return fig
-
-def fig_remplissage_prive_public(annees):
-    d = annees["2025"].copy()
-    STAT = [c for c in d.columns if "tatut" in c][0]
-    FIL = "Filière de formation détaillée bis"
-    CAPA = "Capacité de l’établissement par formation"
-    ADM = "Effectif total des candidats ayant accepté la proposition de l’établissement (admis)"
-    d[CAPA] = _num(d[CAPA]); d[ADM] = _num(d[ADM])
-    d["secteur"] = d[STAT].apply(lambda s: "Public" if s == "Public" else "Privé")
-    g = d.groupby([FIL, "secteur"]).agg(capa=(CAPA, "sum"), adm=(ADM, "sum")).reset_index()
-    g["remplissage"] = g["adm"] / g["capa"] * 100
-    g = g.replace([np.inf, -np.inf], np.nan).dropna(subset=["remplissage"])
-    top = g[g["secteur"] == "Privé"].set_index(FIL)["capa"].sort_values(ascending=False).head(14).index
-    g = g[g[FIL].isin(top)].copy()
-    g[FIL] = pd.Categorical(g[FIL], categories=list(top)[::-1], ordered=True)
-    g["rf"] = g["remplissage"].map(lambda x: _fmt_pct_fr(x, 1))
-    g["cf"] = g["capa"].map(_fmt_int_fr)
-    g["af"] = g["adm"].map(_fmt_int_fr)
-    fig = px.bar(g, x="remplissage", y=FIL, color="secteur", orientation="h", barmode="group",
-                 color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC},
-                 custom_data=["rf", "cf", "af"], title="Remplissage privé vs public par filière (2025)")
-    fig.update_traces(hovertemplate=("<b>%{y}</b><br>Secteur : %{fullData.name}<br>"
-                                     "Remplissage : %{customdata[0]}<br>Capacité : %{customdata[1]} places<br>"
-                                     "Admis : %{customdata[2]}<extra></extra>"))
-    fig.update_layout(xaxis_title="Taux de remplissage (%)", yaxis_title="", template="plotly_white")
-    return fig
-
-def fig_profil_social_academique(annees):
-    d = annees["2025"].copy()
-    STAT = [c for c in d.columns if "tatut" in c][0]
-    cols = {"neobac": "Effectif des admis néo bacheliers",
-            "boursiers": "Dont effectif des admis boursiers néo bacheliers",
-            "TB": "Dont effectif des admis néo bacheliers avec mention Très Bien au bac",
-            "TBF": "Dont effectif des admis néo bacheliers avec mention Très Bien avec félicitations au bac",
-            "sansmention": "Dont effectif des admis néo bacheliers sans mention au bac"}
-    for c in cols.values():
-        d[c] = _num(d[c])
-    g = d.groupby(STAT).agg(**{k: (c, "sum") for k, c in cols.items()}).reset_index()
-    g["% boursiers"] = g["boursiers"] / g["neobac"] * 100
-    g["% TB+"] = (g["TB"] + g["TBF"]) / g["neobac"] * 100
-    g["% sans mention"] = g["sansmention"] / g["neobac"] * 100
-    ordre = ["Public", "Privé sous contrat d'association", "Privé enseignement supérieur", "Privé hors contrat"]
-    g[STAT] = pd.Categorical(g[STAT], categories=ordre, ordered=True)
-    g = g.sort_values(STAT)
-    long = g.melt(id_vars=[STAT, "neobac"], value_vars=["% boursiers", "% TB+", "% sans mention"],
-                  var_name="indicateur", value_name="part")
-    long["pf"] = long["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    long["nf"] = long["neobac"].map(_fmt_int_fr)
-    fig = px.bar(long, x="indicateur", y="part", color=STAT, barmode="group",
-                 custom_data=["pf", "nf"], title="Profil social et académique des admis par sous-statut (2025)")
-    fig.update_traces(hovertemplate=("<b>%{fullData.name}</b><br>%{x} : %{customdata[0]}<br>"
-                                     "Admis néo-bacheliers : %{customdata[1]}<extra></extra>"))
-    fig.update_layout(xaxis_title="", yaxis_title="Part (%)", template="plotly_white")
-    return fig
-
-def fig_boursiers_filiere(annees):
-    from plotly.subplots import make_subplots
-    d = annees["2025"].copy()
-    STAT = [c for c in d.columns if "tatut" in c][0]
-    FILA = "Filière de formation très agrégée"
-    NEO = "Effectif des admis néo bacheliers"
-    BRS = "Dont effectif des admis boursiers néo bacheliers"
-    d[NEO] = _num(d[NEO]); d[BRS] = _num(d[BRS])
-    d["secteur"] = d[STAT].apply(lambda s: "Public" if s == "Public" else "Privé")
-    g = d.groupby([FILA, "secteur"]).agg(neobac=(NEO, "sum"), boursiers=(BRS, "sum")).reset_index()
-    g = g[g["neobac"] >= 200].copy()
-    g["part"] = g["boursiers"] / g["neobac"] * 100
-    g["nom"] = g[FILA].astype(str).str.replace(r"^\d+_", "", regex=True)
-
-    # Filières présentes dans LES DEUX secteurs (comparables → cerclées en rouge)
-    communes = set(g[g["secteur"] == "Privé"]["nom"]) & set(g[g["secteur"] == "Public"]["nom"])
-
-    # Deux panneaux verticaux : double axe Y (barres = nombre, carrés = part %)
-    fig = make_subplots(rows=1, cols=2, subplot_titles=["Privé", "Public"],
-                        specs=[[{"secondary_y": True}, {"secondary_y": True}]],
-                        horizontal_spacing=0.13)
-
-    for col, sec in [(1, "Privé"), (2, "Public")]:
-        sub = g[g["secteur"] == sec].sort_values("boursiers", ascending=False).head(10).copy()
-        sub["bf"] = sub["boursiers"].map(_fmt_int_fr)
-        sub["pf"] = sub["part"].map(lambda x: _fmt_pct_fr(x, 1))
-        # Barres : nombre de boursiers (axe Y gauche)
-        fig.add_trace(go.Bar(x=sub["nom"], y=sub["boursiers"],
-                             marker_color=(COLOR_PRIVATE if sec == "Privé" else COLOR_PUBLIC),
-                             name="Nombre de boursiers", showlegend=(col == 1),
-                             customdata=sub["bf"],
-                             hovertemplate="<b>%{x}</b><br>Boursiers : %{customdata}<extra></extra>"),
-                      row=1, col=col, secondary_y=False)
-        # Carrés rouges : part de boursiers % (axe Y droit)
-        fig.add_trace(go.Scatter(x=sub["nom"], y=sub["part"], mode="markers",
-                                 marker=dict(symbol="square", size=11, color="#D4537E"),
-                                 name="Part de boursiers (%)", showlegend=(col == 1),
-                                 customdata=sub["pf"],
-                                 hovertemplate="<b>%{x}</b><br>Part : %{customdata}<extra></extra>"),
-                      row=1, col=col, secondary_y=True)
-        # Cerclage rouge des filières communes aux deux secteurs
-        comm = sub[sub["nom"].isin(communes)]
-        if not comm.empty:
-            fig.add_trace(go.Scatter(x=comm["nom"], y=comm["part"], mode="markers",
-                                     marker=dict(symbol="circle-open", size=22,
-                                                 line=dict(width=2, color="#D4537E")),
-                                     name="Filière commune (comparable)", showlegend=(col == 1),
-                                     hoverinfo="skip"),
-                          row=1, col=col, secondary_y=True)
-        fig.update_yaxes(title_text="Boursiers", row=1, col=col, secondary_y=False, tickformat=",.0f")
-        fig.update_yaxes(title_text="Part (%)", row=1, col=col, secondary_y=True,
-                         range=[0, 40], ticksuffix=" %", showgrid=False)
-        fig.update_xaxes(tickangle=-40, row=1, col=col)
-
-    fig.update_layout(title="Boursiers par filière : comparaison public / privé (2025)",
-                      template="plotly_white", height=580,
-                      legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5))
-    return fig
-
-
-# ============================================================
-# VERSION STREAMLIT CLOUD — FIGURES À PARTIR DE DATA_WEB
-# ============================================================
+# Cette version est prévue pour Streamlit Cloud : elle ne lit plus les bases brutes.
+# Les CSV de data_web/ sont créés en local avec prepare_data_web.py.
 DATA_WEB_DIR = Path("data_web")
 
-def charger_web_csv(name):
-    path = DATA_WEB_DIR / name
+@st.cache_data(show_spinner="Chargement des données préparées…")
+def charger_web_csv(nom):
+    path = DATA_WEB_DIR / nom
     if not path.exists():
-        raise FileNotFoundError(f"Fichier manquant dans data_web/ : {name}. Lance d'abord prepare_data_web.py en local.")
+        raise FileNotFoundError(
+            f"Fichier manquant : {path}. Lance d'abord python prepare_data_web.py en local, "
+            "puis ajoute le dossier data_web sur GitHub."
+        )
     return pd.read_csv(path, encoding="utf-8-sig")
 
+def _verifier_data_web():
+    requis = [
+        "evolution_inscrits.csv", "prive_vs_public.csv", "croissance_regions.csv",
+        "repartition_prive_type.csv", "contribution_croissance_type.csv", "part_prive_regions.csv",
+        "apprentis_bts.csv", "part_apprentissage_bts.csv", "apprentissage_region_statut.csv",
+        "apprentissage_filiere_prive.csv", "recherche_contrat_statut.csv", "remplissage_filiere.csv",
+        "profil_social_academique.csv", "boursiers_filiere.csv",
+    ]
+    manquants = [f for f in requis if not (DATA_WEB_DIR / f).exists()]
+    if manquants:
+        raise FileNotFoundError("Fichiers data_web manquants : " + ", ".join(manquants))
+
+# ============================================================
+# FIGURES PLOTLY — VERSION CLOUD À PARTIR DE data_web/
+# ============================================================
 def fig_evolution_total_inscrits(_atlas=None):
-    s = charger_web_csv("evolution_inscrits.csv")
+    s = charger_web_csv("evolution_inscrits.csv").sort_values("annee")
     s["fmt"] = s["inscrits"].map(lambda x: _fmt_int_fr(x) + " étudiants")
     fig = go.Figure(go.Scatter(
         x=s["annee"], y=s["inscrits"], mode="lines+markers",
@@ -592,16 +138,24 @@ def fig_evolution_total_inscrits(_atlas=None):
 
 def fig_donuts_etablissements(_atlas=None):
     d = charger_web_csv("repartition_prive_type.csv")
-    fig = make_subplots(rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]], subplot_titles=["2001", "2024"])
+    ordre = ["Écoles de commerce", "Écoles d'art & culture", "Paramédical & social",
+             "Autres écoles spécialisées", "Universités privées", "Autres"]
+    fig = make_subplots(rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]],
+                        subplot_titles=["2001", "2024"])
     for col, an in [(1, "2001"), (2, "2024")]:
-        s = d[d["annee"].astype(str) == an].copy()
-        total = s["effectif"].sum()
-        custom = np.stack([s["type"], s["effectif"], s["effectif"] / total * 100,
-                           s["effectif"].map(_fmt_int_fr), [_fmt_int_fr(total)] * len(s)], axis=-1)
-        fig.add_trace(go.Pie(labels=s["type"], values=s["effectif"], hole=0.55, customdata=custom,
+        s = d[d["annee"].astype(str) == an].set_index("type")["effectif"].reindex(ordre).fillna(0)
+        total = s.sum()
+        custom = np.stack([s.index, s.values,
+                           [v/total*100 if total else 0 for v in s.values],
+                           [_fmt_int_fr(v) for v in s.values],
+                           [_fmt_int_fr(total) for _ in s.values]], axis=-1)
+        fig.add_trace(go.Pie(labels=s.index, values=s.values, hole=0.55,
+                             customdata=custom,
                              hovertemplate=("<b>%{customdata[0]}</b><br>Effectif : %{customdata[3]} étud.<br>"
-                                            "Part : %{customdata[2]:.1f} %<br>Total privé : %{customdata[4]}<extra></extra>")), row=1, col=col)
-        fig.add_annotation(text=f"{_fmt_int_fr(total)}<br>étudiants", x=0.18 if col == 1 else 0.82, y=0.5, showarrow=False, font=dict(size=13))
+                                            "Part : %{customdata[2]:.1f} %<br>Total privé : %{customdata[4]}<extra></extra>")),
+                      row=1, col=col)
+        fig.add_annotation(text=f"{_fmt_int_fr(total)}<br>étudiants",
+                           x=0.18 if col == 1 else 0.82, y=0.5, showarrow=False, font=dict(size=13))
     fig.update_layout(title="Répartition des étudiants privés par type d'établissement : 2001 vs 2024",
                       template="plotly_white", legend_title_text="Type d'établissement")
     return fig
@@ -611,55 +165,72 @@ def fig_croissance_par_type(_atlas=None):
     g["gain_fmt"] = g["gain"].map(_fmt_int_fr)
     g["contribution_fmt"] = g["contribution"].map(lambda x: _fmt_pct_fr(x, 1))
     g["croissance_fmt"] = g["croissance"].map(lambda x: _fmt_pct_fr(x, 0))
-    fig = px.bar(g, x="gain", y="type", orientation="h", custom_data=["gain_fmt", "contribution_fmt", "croissance_fmt"],
+    fig = px.bar(g, x="gain", y="type", orientation="h",
+                 custom_data=["gain_fmt", "contribution_fmt", "croissance_fmt"],
                  title="Quel type d'établissement a porté la croissance du privé ? (2001-2024)")
     fig.update_traces(marker_color=COLOR_PRIVATE,
-                      hovertemplate=("<b>%{y}</b><br>Gain : %{customdata[0]} étud.<br>Contribution : %{customdata[1]}<br>Croissance : %{customdata[2]}<extra></extra>"))
+                      hovertemplate=("<b>%{y}</b><br>Gain : %{customdata[0]} étud.<br>"
+                                     "Contribution : %{customdata[1]}<br>Croissance : %{customdata[2]}<extra></extra>"))
     fig.update_layout(xaxis_title="Gain d'effectifs privés", yaxis_title="", template="plotly_white")
     fig.update_xaxes(tickformat=",.0f")
     return fig
 
 def fig_croissance_prive_vs_public(_atlas=None):
-    data = charger_web_csv("prive_vs_public.csv")
-    data["part"] = data["prive"] / (data["prive"] + data["public"]) * 100
+    data = charger_web_csv("prive_vs_public.csv").sort_values("annee")
+    data["Total"] = data["prive"] + data["public"]
+    data["Part"] = data["prive"] / data["Total"] * 100
     fig = go.Figure()
-    for col, name, color in [("public", "Public", COLOR_PUBLIC), ("prive", "Privé", COLOR_PRIVATE)]:
-        fig.add_trace(go.Scatter(x=data["annee"], y=data[col], mode="lines+markers", name=name,
-                                 line=dict(width=3, color=color), marker=dict(size=7),
-                                 customdata=np.stack([[ _fmt_int_fr(v) + " étud." for v in data[col]], data["part"].map(lambda x: _fmt_pct_fr(x,1))], axis=-1),
-                                 hovertemplate=("<b>%{x}</b><br>Secteur : "+name+"<br>Effectif : %{customdata[0]}<br>Part du privé : %{customdata[1]}<extra></extra>")))
+    for col, label, color in [("public", "Public", COLOR_PUBLIC), ("prive", "Privé", COLOR_PRIVATE)]:
+        fig.add_trace(go.Scatter(x=data["annee"], y=data[col], mode="lines+markers",
+                                 line=dict(width=3, color=color), marker=dict(size=7), name=label,
+                                 customdata=np.stack([data[col].map(lambda x: _fmt_int_fr(x)+" étud."),
+                                                      data["Part"].map(lambda x: _fmt_pct_fr(x,1))], axis=-1),
+                                 hovertemplate=("<b>%{x}</b><br>Secteur : "+label+"<br>Effectif : %{customdata[0]}<br>"
+                                                "Part du privé : %{customdata[1]}<extra></extra>")))
     fig.update_layout(title="Qui porte la croissance du supérieur ? Privé vs public (2001-2025)",
-                      xaxis_title="Année universitaire", yaxis_title="Étudiants inscrits", hovermode="x unified", template="plotly_white", height=460)
+                      xaxis_title="Année universitaire", yaxis_title="Étudiants inscrits",
+                      hovermode="x unified", template="plotly_white", height=460)
     fig.update_xaxes(type="category", tickangle=-45)
     fig.update_yaxes(tickformat=",.0f", rangemode="tozero")
     return fig
 
 def df_croissance_region(_atlas=None):
-    d = charger_web_csv("croissance_regions.csv")
-    return d.rename(columns={"region":"Région", "prive_2001":"Privé 2001", "prive_2024":"Privé 2024", "croissance":"Croissance %"})
+    d = charger_web_csv("croissance_regions.csv").copy()
+    d = d.rename(columns={"region": "Région", "prive_2001": "Privé 2001", "prive_2024": "Privé 2024", "croissance": "Croissance %"})
+    d["Privé 2001"] = d["Privé 2001"].round(0).astype(int)
+    d["Privé 2024"] = d["Privé 2024"].round(0).astype(int)
+    d["Croissance %"] = d["Croissance %"].round(0)
+    return d.sort_values("Croissance %", ascending=False)
 
 def fig_croissance_regions_bar(_atlas=None):
     d = df_croissance_region().copy()
-    hors = ["Corse", "Mayotte", "Guyane", "Guadeloupe", "Martinique", "La Réunion", "Collectivités d'outre-mer", "Collectivités d’outre-mer", "Étranger", "Collectivités d'Outre-Mer", "France métropolitaine + DROM"]
-    d = d[~d["Région"].isin(hors)].sort_values("Croissance %", ascending=True)
+    hors = ["Corse", "Mayotte", "Guyane", "Guadeloupe", "Martinique", "La Réunion",
+            "Collectivités d'outre-mer", "Collectivités d’outre-mer", "Étranger",
+            "Collectivités d'Outre-Mer", "France métropolitaine + DROM"]
+    d = d[~d["Région"].isin(hors)].copy().sort_values("Croissance %", ascending=True)
     d["c_fmt"] = d["Croissance %"].map(lambda x: _fmt_pct_fr(x, 0))
-    d["p1"] = d["Privé 2001"].map(_fmt_int_fr); d["p2"] = d["Privé 2024"].map(_fmt_int_fr)
-    fig = px.bar(d, x="Croissance %", y="Région", orientation="h", custom_data=["c_fmt", "p1", "p2"],
+    d["p1"] = d["Privé 2001"].map(_fmt_int_fr)
+    d["p2"] = d["Privé 2024"].map(_fmt_int_fr)
+    fig = px.bar(d, x="Croissance %", y="Région", orientation="h",
+                 custom_data=["c_fmt", "p1", "p2"],
                  title="Croissance des effectifs privés par région (2001-2024, France métropolitaine hors Corse)")
     fig.update_traces(marker_color=COLOR_PRIVATE,
-                      hovertemplate=("<b>%{y}</b><br>Croissance : %{customdata[0]}<br>Privé 2001 : %{customdata[1]} étud.<br>Privé 2024 : %{customdata[2]} étud.<extra></extra>"))
-    fig.update_layout(template="plotly_white", xaxis_title="Croissance des effectifs privés (%)", yaxis_title="", height=520)
+                      hovertemplate=("<b>%{y}</b><br>Croissance : %{customdata[0]}<br>"
+                                     "Privé 2001 : %{customdata[1]} étud.<br>Privé 2024 : %{customdata[2]} étud.<extra></extra>"))
+    fig.update_layout(template="plotly_white", xaxis_title="Croissance des effectifs privés (%)",
+                      yaxis_title="", height=520)
     return fig
 
 def fig_part_prive_regions(_atlas=None):
     url = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
-    piv = charger_web_csv("part_prive_regions.csv")
+    piv = charger_web_csv("part_prive_regions.csv").copy()
     piv["pf"] = piv["part"].map(lambda x: _fmt_pct_fr(x, 1))
     with urlopen(url) as r:
         gj = json.load(r)
     vmax = float(np.ceil(piv["part"].max() / 5) * 5)
-    fig = px.choropleth(piv, geojson=gj, locations="region", featureidkey="properties.nom", color="part", animation_frame="annee",
-                        color_continuous_scale="YlOrRd", range_color=(0, vmax), custom_data=["pf"],
+    fig = px.choropleth(piv, geojson=gj, locations="region", featureidkey="properties.nom",
+                        color="part", animation_frame="annee", color_continuous_scale="YlOrRd",
+                        range_color=(0, vmax), custom_data=["pf"],
                         title="Part du privé par région : 2001 → 2013 → 2018 → 2024")
     fig.update_traces(hovertemplate="<b>%{location}</b><br>Part du privé : %{customdata[0]}<extra></extra>")
     fig.update_geos(fitbounds="locations", visible=False)
@@ -668,47 +239,68 @@ def fig_part_prive_regions(_atlas=None):
     return fig
 
 def fig_apprentis_bts(_atlas=None):
-    piv = charger_web_csv("apprentis_bts.csv")
+    piv = charger_web_csv("apprentis_bts.csv").sort_values("annee")
     fig = go.Figure()
     for col, label, color, dash in [("total", "Total", COLOR_TOTAL, None), ("prive", "Privé", COLOR_PRIVATE, None), ("public", "Public", COLOR_PUBLIC, "dash")]:
         fig.add_trace(go.Scatter(x=piv["annee"], y=piv[col], mode="lines+markers", name=label,
                                  line=dict(width=3, color=color, dash=dash), marker=dict(size=7),
                                  customdata=np.stack([piv[col].map(lambda x: _fmt_int_fr(x)+" apprentis")], axis=-1),
                                  hovertemplate="<b>%{x}</b><br>"+label+" : %{customdata[0]}<extra></extra>"))
-    fig.update_layout(title="Apprentis en BTS : total, privé et public (2015-2025)", xaxis_title="Année universitaire", yaxis_title="Apprentis en BTS", hovermode="x unified", template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45); fig.update_yaxes(tickformat=",.0f")
+    fig.update_layout(title="Apprentis en BTS : total, privé et public (2015-2025)",
+                      xaxis_title="Année universitaire", yaxis_title="Apprentis en BTS",
+                      hovermode="x unified", template="plotly_white", height=460)
+    fig.update_xaxes(type="category", tickangle=-45)
+    fig.update_yaxes(tickformat=",.0f")
     return fig
 
 def fig_part_apprentissage_bts_secteur(_atlas=None):
-    g = charger_web_csv("part_apprentissage_bts.csv")
-    g["pf"] = g["part"].map(lambda x: _fmt_pct_fr(x, 1)); g["af"] = g["apprentis"].map(_fmt_int_fr); g["tf"] = g["total"].map(_fmt_int_fr)
+    g = charger_web_csv("part_apprentissage_bts.csv").sort_values("annee")
+    g["pf"] = g["part"].map(lambda x: _fmt_pct_fr(x, 1))
+    g["af"] = g["apprentis"].map(_fmt_int_fr)
+    g["tf"] = g["total"].map(_fmt_int_fr)
     fig = px.line(g, x="annee", y="part", color="secteur", markers=True,
-                  color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC}, custom_data=["pf", "af", "tf"],
+                  color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC},
+                  custom_data=["pf", "af", "tf"],
                   title="Part de l'apprentissage dans le BTS, par secteur (2015-2025)")
-    fig.update_traces(line=dict(width=3), marker=dict(size=8), hovertemplate=("<b>%{x}</b><br>Part apprentis : %{customdata[0]}<br>Apprentis : %{customdata[1]}<br>Total BTS : %{customdata[2]}<extra></extra>"))
-    fig.update_layout(xaxis_title="Année universitaire", yaxis_title="Part de l'apprentissage (%)", template="plotly_white", height=460)
-    fig.update_xaxes(type="category", tickangle=-45); fig.update_yaxes(range=[0, 80], ticksuffix=" %")
+    fig.update_traces(line=dict(width=3), marker=dict(size=8),
+                      hovertemplate=("<b>%{x}</b><br>Part apprentis : %{customdata[0]}<br>"
+                                     "Apprentis : %{customdata[1]}<br>Total BTS : %{customdata[2]}<extra></extra>"))
+    fig.update_layout(xaxis_title="Année universitaire", yaxis_title="Part de l'apprentissage (%)",
+                      template="plotly_white", height=460)
+    fig.update_xaxes(type="category", tickangle=-45)
+    fig.update_yaxes(range=[0, 80], ticksuffix=" %")
     return fig
 
 def fig_treemap_filiere_apprentissage(_appr=None):
     vol = charger_web_csv("apprentissage_filiere_prive.csv")
-    total = vol["formations"].sum(); vol["ff"] = vol["formations"].map(_fmt_int_fr); vol["pf"] = vol["part"].map(lambda x: _fmt_pct_fr(x, 1))
-    fig = px.treemap(vol, path=["nom"], values="formations", custom_data=["ff", "pf"], title=f"Volume du privé par filière en apprentissage (2025) — {_fmt_int_fr(total)} formations")
-    fig.update_traces(hovertemplate=("<b>%{label}</b><br>Formations privées : %{customdata[0]}<br>Part : %{customdata[1]}<extra></extra>"))
+    total = vol["formations"].sum()
+    vol["ff"] = vol["formations"].map(_fmt_int_fr)
+    vol["pf"] = vol["part"].map(lambda x: _fmt_pct_fr(x, 1))
+    fig = px.treemap(vol, path=["nom"], values="formations", custom_data=["ff", "pf"],
+                     title=f"Volume du privé par filière en apprentissage (2025) — {_fmt_int_fr(total)} formations")
+    fig.update_traces(hovertemplate=("<b>%{label}</b><br>Formations privées : %{customdata[0]}<br>"
+                                     "Part : %{customdata[1]}<extra></extra>"))
     fig.update_layout(template="plotly_white")
     return fig
 
 def fig_recherche_contrat(_appr=None):
     g = charger_web_csv("recherche_contrat_statut.csv")
     ordre = ["Privé hors contrat", "Privé sous contrat d'association", "Privé enseignement supérieur", "Public"]
-    g["statut"] = pd.Categorical(g["statut"], categories=ordre, ordered=True); g = g.sort_values("statut")
+    g["statut"] = pd.Categorical(g["statut"], categories=ordre, ordered=True)
+    g = g.sort_values("statut")
     g["lbl"] = g["statut"].astype(str) + "<br>(" + g["formations"].astype(int).astype(str) + " formations)"
-    long = g.melt(id_vars=["statut", "lbl", "candidats", "formations", "part_recherche"], value_vars=["securises", "recherche"], var_name="situation", value_name="effectif")
-    long["situation"] = long["situation"].replace({"securises":"Avec débouché", "recherche":"En recherche de contrat"})
-    long["ef"] = long["effectif"].map(_fmt_int_fr); long["prf"] = long["part_recherche"].map(lambda x: _fmt_pct_fr(x, 1))
-    fig = px.bar(long, x="lbl", y="effectif", color="situation", color_discrete_map={"Avec débouché": COLOR_PUBLIC, "En recherche de contrat": COLOR_PRIVATE}, custom_data=["ef", "prf"], title="Apprentissage 2025 : candidats sans employeur par statut")
-    fig.update_traces(hovertemplate=("<b>%{x}</b><br>%{fullData.name} : %{customdata[0]} cand.<br>Part sans employeur : %{customdata[1]}<extra></extra>"))
-    fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Candidats", template="plotly_white"); fig.update_yaxes(tickformat=",.0f")
+    long = g.melt(id_vars=["statut", "lbl", "candidats", "formations", "part_recherche"],
+                  value_vars=["securises", "recherche"], var_name="situation", value_name="effectif")
+    long["situation"] = long["situation"].replace({"securises": "Avec débouché", "recherche": "En recherche de contrat"})
+    long["ef"] = long["effectif"].map(_fmt_int_fr)
+    long["prf"] = long["part_recherche"].map(lambda x: _fmt_pct_fr(x, 1))
+    fig = px.bar(long, x="lbl", y="effectif", color="situation",
+                 color_discrete_map={"Avec débouché": COLOR_PUBLIC, "En recherche de contrat": COLOR_PRIVATE},
+                 custom_data=["ef", "prf"], title="Apprentissage 2025 : candidats sans employeur par statut")
+    fig.update_traces(hovertemplate=("<b>%{x}</b><br>%{fullData.name} : %{customdata[0]} cand.<br>"
+                                     "Part sans employeur : %{customdata[1]}<extra></extra>"))
+    fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Candidats", template="plotly_white")
+    fig.update_yaxes(tickformat=",.0f")
     return fig
 
 def fig_composition_statut_region(_appr=None):
@@ -717,48 +309,83 @@ def fig_composition_statut_region(_appr=None):
     if "Privé hors contrat" in long["statut"].unique():
         ordre = long[long["statut"] == "Privé hors contrat"].sort_values("part")["region"].tolist()
         long["region"] = pd.Categorical(long["region"], categories=ordre, ordered=True)
-    fig = px.bar(long, x="part", y="region", color="statut", orientation="h", custom_data=["part_fmt"], title="Composition par statut de l'offre d'apprentissage par région (2025)")
+    fig = px.bar(long, x="part", y="region", color="statut", orientation="h",
+                 custom_data=["part_fmt"],
+                 title="Composition par statut de l'offre d'apprentissage par région (2025)")
     fig.update_traces(hovertemplate="<b>%{y}</b><br>%{fullData.name} : %{customdata[0]}<extra></extra>")
-    fig.update_layout(barmode="stack", xaxis_title="Part de l'offre d'apprentissage (%)", yaxis_title="", template="plotly_white", legend_title_text="Statut")
+    fig.update_layout(barmode="stack", xaxis_title="Part de l'offre d'apprentissage (%)",
+                      yaxis_title="", template="plotly_white", legend_title_text="Statut")
     return fig
 
 def fig_remplissage_prive_public(_annees=None):
     g = charger_web_csv("remplissage_filiere.csv")
     top = g[g["secteur"] == "Privé"].set_index("filiere")["capa"].sort_values(ascending=False).head(14).index
-    g = g[g["filiere"].isin(top)].copy(); g["filiere"] = pd.Categorical(g["filiere"], categories=list(top)[::-1], ordered=True)
-    g["rf"] = g["remplissage"].map(lambda x: _fmt_pct_fr(x, 1)); g["cf"] = g["capa"].map(_fmt_int_fr); g["af"] = g["adm"].map(_fmt_int_fr)
-    fig = px.bar(g, x="remplissage", y="filiere", color="secteur", orientation="h", barmode="group", color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC}, custom_data=["rf", "cf", "af"], title="Remplissage privé vs public par filière (2025)")
-    fig.update_traces(hovertemplate=("<b>%{y}</b><br>Secteur : %{fullData.name}<br>Remplissage : %{customdata[0]}<br>Capacité : %{customdata[1]} places<br>Admis : %{customdata[2]}<extra></extra>"))
+    g = g[g["filiere"].isin(top)].copy()
+    g["filiere"] = pd.Categorical(g["filiere"], categories=list(top)[::-1], ordered=True)
+    g["rf"] = g["remplissage"].map(lambda x: _fmt_pct_fr(x, 1))
+    g["cf"] = g["capa"].map(_fmt_int_fr)
+    g["af"] = g["adm"].map(_fmt_int_fr)
+    fig = px.bar(g, x="remplissage", y="filiere", color="secteur", orientation="h", barmode="group",
+                 color_discrete_map={"Privé": COLOR_PRIVATE, "Public": COLOR_PUBLIC},
+                 custom_data=["rf", "cf", "af"], title="Remplissage privé vs public par filière (2025)")
+    fig.update_traces(hovertemplate=("<b>%{y}</b><br>Secteur : %{fullData.name}<br>"
+                                     "Remplissage : %{customdata[0]}<br>Capacité : %{customdata[1]} places<br>"
+                                     "Admis : %{customdata[2]}<extra></extra>"))
     fig.update_layout(xaxis_title="Taux de remplissage (%)", yaxis_title="", template="plotly_white")
     return fig
 
 def fig_profil_social_academique(_annees=None):
     g = charger_web_csv("profil_social_academique.csv")
     ordre = ["Public", "Privé sous contrat d'association", "Privé enseignement supérieur", "Privé hors contrat"]
-    g["statut"] = pd.Categorical(g["statut"], categories=ordre, ordered=True); g = g.sort_values("statut")
-    long = g.melt(id_vars=["statut", "neobac"], value_vars=["% boursiers", "% TB+", "% sans mention"], var_name="indicateur", value_name="part")
-    long["pf"] = long["part"].map(lambda x: _fmt_pct_fr(x, 1)); long["nf"] = long["neobac"].map(_fmt_int_fr)
-    fig = px.bar(long, x="indicateur", y="part", color="statut", barmode="group", custom_data=["pf", "nf"], title="Profil social et académique des admis par sous-statut (2025)")
-    fig.update_traces(hovertemplate=("<b>%{fullData.name}</b><br>%{x} : %{customdata[0]}<br>Admis néo-bacheliers : %{customdata[1]}<extra></extra>"))
+    g["statut"] = pd.Categorical(g["statut"], categories=ordre, ordered=True)
+    g = g.sort_values("statut")
+    long = g.melt(id_vars=["statut", "neobac"], value_vars=["% boursiers", "% TB+", "% sans mention"],
+                  var_name="indicateur", value_name="part")
+    long["pf"] = long["part"].map(lambda x: _fmt_pct_fr(x, 1))
+    long["nf"] = long["neobac"].map(_fmt_int_fr)
+    fig = px.bar(long, x="indicateur", y="part", color="statut", barmode="group",
+                 custom_data=["pf", "nf"], title="Profil social et académique des admis par sous-statut (2025)")
+    fig.update_traces(hovertemplate=("<b>%{fullData.name}</b><br>%{x} : %{customdata[0]}<br>"
+                                     "Admis néo-bacheliers : %{customdata[1]}<extra></extra>"))
     fig.update_layout(xaxis_title="", yaxis_title="Part (%)", template="plotly_white")
     return fig
 
 def fig_boursiers_filiere(_annees=None):
     g = charger_web_csv("boursiers_filiere.csv")
     communes = set(g[g["secteur"] == "Privé"]["nom"]) & set(g[g["secteur"] == "Public"]["nom"])
-    fig = make_subplots(rows=1, cols=2, subplot_titles=["Privé", "Public"], specs=[[{"secondary_y": True}, {"secondary_y": True}]], horizontal_spacing=0.13)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=["Privé", "Public"],
+                        specs=[[{"secondary_y": True}, {"secondary_y": True}]],
+                        horizontal_spacing=0.13)
     for col, sec in [(1, "Privé"), (2, "Public")]:
         sub = g[g["secteur"] == sec].sort_values("boursiers", ascending=False).head(10).copy()
-        sub["bf"] = sub["boursiers"].map(_fmt_int_fr); sub["pf"] = sub["part"].map(lambda x: _fmt_pct_fr(x, 1))
-        fig.add_trace(go.Bar(x=sub["nom"], y=sub["boursiers"], marker_color=(COLOR_PRIVATE if sec == "Privé" else COLOR_PUBLIC), name="Nombre de boursiers", showlegend=(col == 1), customdata=sub["bf"], hovertemplate="<b>%{x}</b><br>Boursiers : %{customdata}<extra></extra>"), row=1, col=col, secondary_y=False)
-        fig.add_trace(go.Scatter(x=sub["nom"], y=sub["part"], mode="markers", marker=dict(symbol="square", size=11, color="#D4537E"), name="Part de boursiers (%)", showlegend=(col == 1), customdata=sub["pf"], hovertemplate="<b>%{x}</b><br>Part : %{customdata}<extra></extra>"), row=1, col=col, secondary_y=True)
+        sub["bf"] = sub["boursiers"].map(_fmt_int_fr)
+        sub["pf"] = sub["part"].map(lambda x: _fmt_pct_fr(x, 1))
+        fig.add_trace(go.Bar(x=sub["nom"], y=sub["boursiers"],
+                             marker_color=(COLOR_PRIVATE if sec == "Privé" else COLOR_PUBLIC),
+                             name="Nombre de boursiers", showlegend=(col == 1),
+                             customdata=sub["bf"],
+                             hovertemplate="<b>%{x}</b><br>Boursiers : %{customdata}<extra></extra>"),
+                      row=1, col=col, secondary_y=False)
+        fig.add_trace(go.Scatter(x=sub["nom"], y=sub["part"], mode="markers",
+                                 marker=dict(symbol="square", size=11, color="#D4537E"),
+                                 name="Part de boursiers (%)", showlegend=(col == 1),
+                                 customdata=sub["pf"],
+                                 hovertemplate="<b>%{x}</b><br>Part : %{customdata}<extra></extra>"),
+                      row=1, col=col, secondary_y=True)
         comm = sub[sub["nom"].isin(communes)]
         if not comm.empty:
-            fig.add_trace(go.Scatter(x=comm["nom"], y=comm["part"], mode="markers", marker=dict(symbol="circle-open", size=22, line=dict(width=2, color="#D4537E")), name="Filière commune (comparable)", showlegend=(col == 1), hoverinfo="skip"), row=1, col=col, secondary_y=True)
+            fig.add_trace(go.Scatter(x=comm["nom"], y=comm["part"], mode="markers",
+                                     marker=dict(symbol="circle-open", size=22,
+                                                 line=dict(width=2, color="#D4537E")),
+                                     name="Filière commune (comparable)", showlegend=(col == 1),
+                                     hoverinfo="skip"),
+                          row=1, col=col, secondary_y=True)
         fig.update_yaxes(title_text="Boursiers", row=1, col=col, secondary_y=False, tickformat=",.0f")
-        fig.update_yaxes(title_text="Part (%)", row=1, col=col, secondary_y=True, range=[0, 40], ticksuffix=" %", showgrid=False)
+        fig.update_yaxes(title_text="Part (%)", row=1, col=col, secondary_y=True,
+                         range=[0, 40], ticksuffix=" %", showgrid=False)
         fig.update_xaxes(tickangle=-40, row=1, col=col)
-    fig.update_layout(title="Boursiers par filière : comparaison public / privé (2025)", template="plotly_white", height=580,
+    fig.update_layout(title="Boursiers par filière : comparaison public / privé (2025)",
+                      template="plotly_white", height=580,
                       legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5))
     return fig
 
@@ -766,17 +393,9 @@ def fig_boursiers_filiere(_annees=None):
 # CHARGEMENT
 # ============================================================
 try:
-    required_files = [
-        "evolution_inscrits.csv", "prive_vs_public.csv", "croissance_regions.csv",
-        "repartition_prive_type.csv", "contribution_croissance_type.csv", "part_prive_regions.csv",
-        "apprentis_bts.csv", "part_apprentissage_bts.csv", "apprentissage_region_statut.csv",
-        "apprentissage_filiere_prive.csv", "recherche_contrat_statut.csv", "remplissage_filiere.csv",
-        "profil_social_academique.csv", "boursiers_filiere.csv"
-    ]
-    missing = [f for f in required_files if not (DATA_WEB_DIR / f).exists()]
-    if missing:
-        raise FileNotFoundError("Fichiers manquants dans data_web/ : " + ", ".join(missing))
-    atlas, annees, appr = None, None, None
+    _verifier_data_web()
+    # Variables conservées pour ne pas modifier les appels existants plus bas.
+    atlas, annees, appr = None, {"2025": None}, None
 except Exception as e:
     st.error("Erreur de chargement des données allégées.")
     st.exception(e)
